@@ -1,0 +1,168 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webapp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: webapp
+  template:
+    metadata:
+      labels:
+        app: webapp
+    spec:
+      containers:
+      - name: webapp
+        image: nginxdemos/nginx-hello:plain-text
+        ports:
+        - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: webapp-svc
+spec:
+  ports:
+  - port: 80
+    targetPort: 8080
+    protocol: TCP
+    name: http
+  selector:
+    app: webapp
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: syslog
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: syslog
+  template:
+    metadata:
+      labels:
+        app: syslog
+    spec:
+      containers:
+        - name: syslog
+          image: balabit/syslog-ng:4.3.0
+          ports:
+            - containerPort: 514
+            - containerPort: 601
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: syslog-svc
+spec:
+  ports:
+    - port: 514
+      targetPort: 514
+      protocol: TCP
+  selector:
+    app: syslog
+
+---
+apiVersion: appprotect.f5.com/v1beta1
+kind: APUserSig
+metadata:
+  name: apple
+spec:
+  signatures:
+  - accuracy: medium
+    attackType:
+      name: Brute Force Attack
+    description: Medium accuracy user defined signature with tag (Fruits)
+    name: Apple_medium_acc
+    risk: medium
+    rule: content:"apple"; nocase;
+    signatureType: request
+    systems:
+    - name: Microsoft Windows
+    - name: Unix/Linux
+  tag: Fruits
+
+---
+apiVersion: appprotect.f5.com/v1beta1
+kind: APPolicy
+metadata:
+  name: dataguard-alarm
+spec:
+  policy:
+    signature-requirements:
+    - tag: Fruits
+    signature-sets:
+    - name: apple_sigs
+      block: true
+      signatureSet:
+        filter:
+          tagValue: Fruits
+          tagFilter: eq
+    applicationLanguage: utf-8
+    blocking-settings:
+      violations:
+      - alarm: true
+        block: false
+        name: VIOL_DATA_GUARD
+    data-guard:
+      creditCardNumbers: true
+      enabled: true
+      enforcementMode: ignore-urls-in-list
+      enforcementUrls: []
+      lastCcnDigitsToExpose: 4
+      lastSsnDigitsToExpose: 4
+      maskData: true
+      usSocialSecurityNumbers: true
+    enforcementMode: blocking
+    name: dataguard-alarm
+    template:
+      name: POLICY_TEMPLATE_NGINX_BASE
+
+---
+apiVersion: appprotect.f5.com/v1beta1
+kind: APLogConf
+metadata:
+  name: logconf
+spec:
+  content:
+    format: default
+    max_message_size: 64k
+    max_request_size: any
+  filter:
+    request_type: all
+
+---
+apiVersion: k8s.nginx.org/v1
+kind: Policy
+metadata:
+  name: waf-policy
+spec:
+  waf:
+    enable: true
+    apPolicy: "default/dataguard-alarm"
+    securityLogs:
+    - enable: true
+      apLogConf: "default/logconf"
+      logDest: "syslog:server=syslog-svc.default:514"
+
+---
+apiVersion: k8s.nginx.org/v1
+kind: VirtualServer
+metadata:
+  name: webapp
+spec:
+  host: webapp.example.com
+  policies:
+  - name: waf-policy
+  upstreams:
+  - name: webapp
+    service: webapp-svc
+    port: 80
+  routes:
+  - path: /
+    action:
+      pass: webapp
